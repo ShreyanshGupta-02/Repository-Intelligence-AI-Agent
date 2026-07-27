@@ -1,0 +1,31 @@
+# OS & IDE files
+.DS_Store
+Thumbs.db
+*.swp
+*.log
+.idea/
+.vscode/
+*.iml
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+*.local
+
+# Java / Maven / Backend
+target/
+.mvn/wrapper/maven-wrapper.jar
+cloned_repos/
+repo-clone-*
+*.class
+*.jar
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Antigravity Scratch / Logs
+Gemini_Repository_Intelligence_AI_Agent_.txt
