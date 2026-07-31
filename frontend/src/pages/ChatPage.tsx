@@ -286,12 +286,6 @@ export const ChatPage: React.FC = () => {
                     <span>Architecture Overview</span>
                   </button>
                 )}
-
-                {selectedRepo.status !== 'INDEXED' && (
-                  <span className="text-amber-400 text-[11px] animate-pulse">
-                    Indexing pipeline active ({selectedRepo.status})...
-                  </span>
-                )}
               </div>
             </div>
           )}

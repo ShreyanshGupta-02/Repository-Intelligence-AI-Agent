@@ -8,19 +8,36 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.*;
 
 /**
  * Service for storing and searching vector embeddings in Neon PostgreSQL via Spring AI PgVectorStore.
- * Features concurrent multi-threaded batch processing for fast embedding generation and vector storage.
+ * <p>
+ * Performance strategy (optimized for local Ollama CPU-based embeddings):
+ * <ul>
+ *   <li>Uses large batches (50 docs) to minimize HTTP round-trips to Ollama</li>
+ *   <li>Sequential processing — Ollama serializes embedding requests on CPU,
+ *       so concurrency only creates queue contention and wastes time</li>
+ *   <li>Each vectorStore.add() call: Ollama embeds the batch → inserts into PgVector</li>
+ * </ul>
+ * <p>
+ * Why NOT concurrent: Ollama on CPU processes embeddings one request at a time.
+ * With 4 concurrent threads, batches queue up in Ollama and individual batch times
+ * balloon from ~10s to ~80s+ due to queue wait. Sequential with large batches is faster.
  */
 @Service
 public class VectorStoreService {
 
     private static final Logger log = LoggerFactory.getLogger(VectorStoreService.class);
 
-    private static final int BATCH_SIZE = 100;
-    private static final int CONCURRENCY_LEVEL = 1;
+    /**
+     * Number of documents per batch for vectorStore.add().
+     * Each batch = 1 Ollama API call (embedding) + 1 PgVector DB insert.
+     * <p>
+     * 50 is optimal: large enough to amortize HTTP/Ollama overhead per doc,
+     * small enough for reliable DB transactions to remote Neon. Ollama's /api/embed
+     * endpoint handles batch input natively.
+     */
+    private static final int BATCH_SIZE = 50;
 
     private final VectorStore vectorStore;
 
@@ -29,7 +46,11 @@ public class VectorStoreService {
     }
 
     /**
-     * Stores a list of documents into PgVectorStore in parallel batches for max throughput.
+     * Stores documents into PgVectorStore in sequential batches.
+     * <p>
+     * Each batch call to vectorStore.add() internally:
+     * 1. Sends texts to Ollama's /api/embed endpoint for embedding
+     * 2. Inserts the embedded vectors into PgVector (Neon DB)
      *
      * @param documents list of Spring AI Document objects to persist
      */
@@ -39,49 +60,62 @@ public class VectorStoreService {
             return;
         }
 
-        log.info("[VECTOR] Storing {} vector documents into PgVectorStore in parallel (batchSize={}, concurrency={})...",
-                documents.size(), BATCH_SIZE, CONCURRENCY_LEVEL);
+        int totalDocs = documents.size();
+        log.info("[VECTOR] Storing {} documents into PgVectorStore (batchSize={})...",
+                totalDocs, BATCH_SIZE);
         long startTime = System.currentTimeMillis();
 
+        // Split into batches
         List<List<Document>> batches = new ArrayList<>();
-        for (int i = 0; i < documents.size(); i += BATCH_SIZE) {
-            int end = Math.min(i + BATCH_SIZE, documents.size());
-            batches.add(documents.subList(i, end));
+        for (int i = 0; i < totalDocs; i += BATCH_SIZE) {
+            int end = Math.min(i + BATCH_SIZE, totalDocs);
+            batches.add(new ArrayList<>(documents.subList(i, end)));
         }
 
-        ExecutorService executor = Executors.newFixedThreadPool(Math.min(CONCURRENCY_LEVEL, batches.size()));
+        int totalBatches = batches.size();
+        log.info("[VECTOR] Split into {} batches of up to {} docs", totalBatches, BATCH_SIZE);
 
-        try {
-            List<Future<Void>> futures = new ArrayList<>();
-            for (int b = 0; b < batches.size(); b++) {
-                final int batchNum = b + 1;
-                final List<Document> batch = batches.get(b);
+        int storedCount = 0;
 
-                futures.add(executor.submit(() -> {
-                    long batchStart = System.currentTimeMillis();
-                    vectorStore.add(batch);
-                    long batchElapsed = System.currentTimeMillis() - batchStart;
-                    log.debug("[VECTOR] Batch {}/{} ({} docs) stored successfully in {}ms",
-                            batchNum, batches.size(), batch.size(), batchElapsed);
-                    return null;
-                }));
+        for (int b = 0; b < totalBatches; b++) {
+            int batchNum = b + 1;
+            List<Document> batch = batches.get(b);
+            long batchStart = System.currentTimeMillis();
+
+            try {
+                vectorStore.add(batch);
+
+                storedCount += batch.size();
+                long batchElapsed = System.currentTimeMillis() - batchStart;
+                long totalElapsed = System.currentTimeMillis() - startTime;
+
+                log.info("[VECTOR] Batch {}/{} ({} docs) done in {}ms | Progress: {}/{} docs | Elapsed: {}s",
+                        batchNum, totalBatches, batch.size(), batchElapsed,
+                        storedCount, totalDocs,
+                        String.format("%.1f", totalElapsed / 1000.0));
+
+            } catch (Exception e) {
+                long batchElapsed = System.currentTimeMillis() - batchStart;
+                log.error("[VECTOR] Batch {}/{} FAILED after {}ms: {}",
+                        batchNum, totalBatches, batchElapsed, e.getMessage(), e);
+                // Continue with remaining batches
             }
-
-            for (Future<Void> future : futures) {
-                future.get(); // Block until all batches complete or throw exception
-            }
-
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Vector storage interrupted", e);
-        } catch (ExecutionException e) {
-            log.error("[VECTOR] Vector batch storage failed: {}", e.getCause().getMessage(), e.getCause());
-            throw new RuntimeException("Failed to persist vector batch: " + e.getCause().getMessage(), e.getCause());
-        } finally {
-            executor.shutdown();
         }
 
         long elapsed = System.currentTimeMillis() - startTime;
-        log.info("[VECTOR] Successfully stored all {} vector documents in {}ms", documents.size(), elapsed);
+        double docsPerSec = storedCount / Math.max(elapsed / 1000.0, 0.001);
+
+        if (storedCount == 0) {
+            throw new RuntimeException(
+                    "All embedding batches failed. Check Ollama connectivity at localhost:11434");
+        }
+
+        if (storedCount < totalDocs) {
+            log.warn("[VECTOR] Partially completed: {}/{} docs stored in {}ms",
+                    storedCount, totalDocs, elapsed);
+        } else {
+            log.info("[VECTOR] Completed: {} docs stored in {}ms ({} docs/sec)",
+                    storedCount, elapsed, String.format("%.1f", docsPerSec));
+        }
     }
 }

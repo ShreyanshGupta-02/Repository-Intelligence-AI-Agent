@@ -75,7 +75,8 @@ public class GitCloneService {
      */
     @Async("gitCloneExecutor")
     public void cloneRepositoryAsync(UUID repositoryId) {
-        log.info("[PIPELINE] Starting async clone+parse for repository id={}", repositoryId);
+        log.info("[PIPELINE] ========== Starting indexing pipeline for repository id={} ==========", repositoryId);
+        long pipelineStart = System.currentTimeMillis();
 
         Path tempDir = null;
         try {
@@ -97,8 +98,8 @@ public class GitCloneService {
             tempDir = Files.createTempDirectory(tempDirPrefix);
             log.debug("[PIPELINE] Created temp directory: {}", tempDir);
 
-            // 5. Perform shallow clone (depth=1, single branch)
-            log.info("[PIPELINE] Cloning '{}' into {} ...", repo.getGithubUrl(), tempDir);
+            // ===== STAGE 1: Git Clone =====
+            log.info("[PIPELINE] [STAGE 1/4] Cloning '{}' ...", repo.getGithubUrl());
             long cloneStart = System.currentTimeMillis();
 
             String cloneUrl = repo.getGithubUrl().trim();
@@ -114,44 +115,59 @@ public class GitCloneService {
                     .call()) {
 
                 long cloneElapsed = System.currentTimeMillis() - cloneStart;
-                log.info("[PIPELINE] Clone completed for '{}' in {}ms", repo.getName(), cloneElapsed);
+                log.info("[PIPELINE] [STAGE 1/4] Clone completed in {}ms", cloneElapsed);
             }
 
-            // 6. Transition: CLONING → PARSING
+            // ===== STAGE 2: Parse Files =====
             updateStatus(repo, RepositoryStatus.PARSING, null);
-            log.info("[PIPELINE] Status → PARSING for '{}' (id={})", repo.getName(), repo.getId());
+            log.info("[PIPELINE] [STAGE 2/4] Parsing source files for '{}'...", repo.getName());
+            long parseStart = System.currentTimeMillis();
 
-            // 7. Parse source files from cloned directory
             int fileCount = fileParserService.parseRepository(repo, tempDir);
-            log.info("[PIPELINE] Parsed {} files for '{}'", fileCount, repo.getName());
 
-            // 8. Chunk parsed files into code chunks
+            long parseElapsed = System.currentTimeMillis() - parseStart;
+            log.info("[PIPELINE] [STAGE 2/4] Parsed {} files in {}ms", fileCount, parseElapsed);
+
+            // ===== STAGE 3: Chunk Files =====
+            log.info("[PIPELINE] [STAGE 3/4] Chunking parsed files for '{}'...", repo.getName());
+            long chunkStart = System.currentTimeMillis();
+
             int chunkCount = chunkingService.chunkRepository(repo);
-            log.info("[PIPELINE] Created {} chunks for '{}'", chunkCount, repo.getName());
 
-            // 9. Transition: PARSING → EMBEDDING
+            long chunkElapsed = System.currentTimeMillis() - chunkStart;
+            log.info("[PIPELINE] [STAGE 3/4] Created {} chunks in {}ms", chunkCount, chunkElapsed);
+
+            // ===== STAGE 4: Embed + Store Vectors =====
             updateStatus(repo, RepositoryStatus.EMBEDDING, null);
-            log.info("[PIPELINE] Status → EMBEDDING for '{}' (id={})", repo.getName(), repo.getId());
+            log.info("[PIPELINE] [STAGE 4/4] Embedding & storing {} chunks for '{}'...", chunkCount, repo.getName());
+            long embedStart = System.currentTimeMillis();
 
-            // 10. Generate embeddings for all chunks via Ollama
             var documents = embeddingService.embedRepository(repo);
-            log.info("[PIPELINE] Generated {} embeddings for '{}'", documents.size(), repo.getName());
 
-            // 11. Persist vector embeddings into Neon PgVectorStore
             if (!documents.isEmpty()) {
                 vectorStoreService.saveDocuments(documents);
-                log.info("[PIPELINE] Persisted {} vector embeddings into PgVectorStore for '{}'", documents.size(), repo.getName());
             }
 
-            // 12. Transition: EMBEDDING → INDEXED
+            long embedElapsed = System.currentTimeMillis() - embedStart;
+            log.info("[PIPELINE] [STAGE 4/4] Embedded & stored {} documents in {}ms", documents.size(), embedElapsed);
+
+            // ===== PIPELINE COMPLETE =====
             updateStatus(repo, RepositoryStatus.INDEXED, null);
-            log.info("[PIPELINE] Status → INDEXED for '{}' (id={})", repo.getName(), repo.getId());
+
+            long totalElapsed = System.currentTimeMillis() - pipelineStart;
+            log.info("[PIPELINE] ========== PIPELINE COMPLETE for '{}' ==========", repo.getName());
+            log.info("[PIPELINE] Total: {}ms | Clone: {}ms | Parse: {}ms | Chunk: {}ms | Embed+Store: {}ms",
+                    totalElapsed,
+                    System.currentTimeMillis() - cloneStart - (parseElapsed + chunkElapsed + embedElapsed),
+                    parseElapsed, chunkElapsed, embedElapsed);
+            log.info("[PIPELINE] Stats: {} files -> {} chunks -> {} vectors in {}s",
+                    fileCount, chunkCount, documents.size(), String.format("%.1f", totalElapsed / 1000.0));
 
         } catch (Exception ex) {
-            log.error("[PIPELINE] FAILED for repository id={}: {}", repositoryId, ex.getMessage(), ex);
+            long failedElapsed = System.currentTimeMillis() - pipelineStart;
+            log.error("[PIPELINE] FAILED for repository id={} after {}ms: {}", repositoryId, failedElapsed, ex.getMessage(), ex);
             handleCloneFailure(repositoryId, ex.getMessage());
         } finally {
-            // 9. ALWAYS clean up temp directory
             if (tempDir != null) {
                 cleanupTempDirectory(tempDir);
             }

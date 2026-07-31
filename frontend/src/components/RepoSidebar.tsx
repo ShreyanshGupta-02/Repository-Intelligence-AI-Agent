@@ -148,6 +148,10 @@ export const RepoSidebar: React.FC<RepoSidebarProps> = ({
 
   const sessionGroups = groupSessionsByDate(chatSessions);
 
+  const isAnyRepoIndexing = isCloning || repositories.some(
+    r => r.status === 'PENDING' || r.status === 'CLONING' || r.status === 'PARSING' || r.status === 'EMBEDDING'
+  );
+
   return (
     <aside className="w-80 border-r border-slate-800/80 bg-slate-950/60 backdrop-blur-md flex flex-col h-[calc(100vh-4rem)]">
       {/* Top Section Tab Switcher */}
@@ -200,7 +204,7 @@ export const RepoSidebar: React.FC<RepoSidebarProps> = ({
                 </div>
 
                 <p className="text-[11px] text-slate-400 leading-relaxed mb-4">
-                  Sign in to clone GitHub repositories, analyze code architecture, and save your chat history.
+                  Sign in to index GitHub repositories, analyze code architecture, and save your chat history.
                 </p>
 
                 <button
@@ -214,34 +218,39 @@ export const RepoSidebar: React.FC<RepoSidebarProps> = ({
             </div>
           ) : (
             <div className="p-4 border-b border-slate-800/80 space-y-3">
-              {/* Clone Form */}
+              {/* Indexing Form */}
               <form onSubmit={handleCloneRepo} className="space-y-2">
                 <div className="relative">
                   <input
                     type="url"
-                    placeholder="https://github.com/owner/repo"
+                    placeholder={isAnyRepoIndexing ? "Indexing in progress..." : "https://github.com/owner/repo"}
                     value={urlInput}
                     onChange={(e) => setUrlInput(e.target.value)}
                     className="w-full px-3 py-2 pl-9 bg-slate-900/90 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 transition-all"
-                    disabled={isCloning}
+                    disabled={isAnyRepoIndexing}
                   />
                   <GitPullRequest className="w-4 h-4 text-slate-500 absolute left-2.5 top-2.5" />
                 </div>
 
                 <button
                   type="submit"
-                  disabled={isCloning || !urlInput.trim()}
+                  disabled={isAnyRepoIndexing || !urlInput.trim()}
                   className="w-full py-2 px-3 rounded-lg bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-semibold shadow-md shadow-indigo-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1.5 transition-all"
                 >
                   {isCloning ? (
                     <>
                       <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Initiating Clone...</span>
+                      <span>Initiating Indexing...</span>
+                    </>
+                  ) : isAnyRepoIndexing ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Indexing in Progress...</span>
                     </>
                   ) : (
                     <>
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Clone & Index Repo</span>
+                      <span>Index Repository</span>
                     </>
                   )}
                 </button>
@@ -281,7 +290,7 @@ export const RepoSidebar: React.FC<RepoSidebarProps> = ({
                 </div>
                 <p className="text-xs text-slate-400 font-medium">No repositories indexed yet</p>
                 <p className="text-[11px] text-slate-500">
-                  Paste a public GitHub URL above to clone and index your repository.
+                  Paste a public GitHub URL above to index your repository.
                 </p>
               </div>
             ) : filteredRepos.length === 0 ? (

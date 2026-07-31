@@ -63,6 +63,9 @@ public class FileParserService {
 
     /**
      * Directory names to skip entirely when walking the file tree.
+     * Includes test/example/benchmark directories — these generate massive
+     * amounts of chunks (50-60% of total for repos like Express) but add
+     * minimal value for code architecture understanding and RAG retrieval.
      */
     private static final Set<String> EXCLUDED_DIRECTORIES = Set.of(
             ".git", ".svn", ".hg",
@@ -72,7 +75,12 @@ public class FileParserService {
             ".idea", ".vscode", ".eclipse", ".settings",
             ".gradle", "__pycache__", ".mypy_cache", ".pytest_cache",
             ".tox", "venv", ".venv", "env", ".cache", "tmp", "temp",
-            "coverage", ".nyc_output", "fixtures", "mocks", "surefire-reports"
+            "coverage", ".nyc_output", "fixtures", "mocks", "surefire-reports",
+            // Test directories — generate huge chunk counts with low retrieval value
+            "test", "tests", "__tests__", "spec", "specs", "test-suite",
+            // Examples, benchmarks, and docs — useful but not for RAG embeddings
+            "examples", "example", "benchmarks", "benchmark",
+            "docs", "doc", "documentation"
     );
 
     /**
